@@ -1,0 +1,73 @@
+services:
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:15
+    container_name: wg-easy
+    environment:
+      - LANG=en
+      - WG_HOST={{ wg_public_hostname }}     # 例: vpn.example.com
+      - PASSWORD_HASH={{ wg_password_hash }} # bcrypt
+      - PORT=51821
+      - WG_PORT=51820
+      # wg-easy 慣習: 末尾の "x" はクライアントごとの第4オクテットの placeholder
+      # (テンプレ変数ではない)。
+      - WG_DEFAULT_ADDRESS=10.8.0.x
+      - WG_DEFAULT_DNS=1.1.1.1, 2606:4700:4700::1111
+      # dual-stack VPN (see CLAUDE.md "Network family policy"). wg-easy v15 では
+      # env はあくまで初回 boot の seed で、永続値は内部 DB 側に持つ — UI から
+      # サーバ設定を変えると上書きされ、その後は env を編集しても反映されない。
+      # それでも初回構築で正しい既定値を入れておくこと、および "意図の宣言" として
+      # 意味があるので残す。実際の enforcement は CLAUDE.md "Post-deploy manual
+      # UI setup" の手順で UI 側に保存する。
+      - WG_ALLOWED_IPS=0.0.0.0/0, ::/0
+    volumes:
+      - ./wg-easy-data:/etc/wireguard
+      # NOTE: 通常wg-easyでは/lib/modulesをbindするが、unprivileged LXC ではコンテナ内から modprobe できないため、/lib/modules をバインドしても無意味。
+      # 代わりに、Proxmox ホスト側でwireguard モジュールが load 済みであることに依存している。
+      # - /lib/modules:/lib/modules:ro
+    ports:
+      - "51820:51820/udp"
+      # 51821 は Tunnel 経由なので外に出さない
+    cap_add:
+      - NET_ADMIN
+      # NOTE: 通常wg-easyではSYS_MODULEをcap_addしておくが、
+      # SYS_MODULE は unprivileged LXC では実質効かない（/lib/modulesと同様の理由による）
+      # ホスト側で modprobe wireguard 済みである前提のため不要。
+      # - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv6.conf.all.forwarding=1
+      - net.ipv6.conf.default.forwarding=1
+    restart: unless-stopped
+    networks:
+      wg:
+        ipv4_address: 10.42.42.42
+        ipv6_address: fdcc:ad94:bacf:61a3::2a
+
+  cloudflared:
+    # Edge proxy fronting the admin UI behind Cloudflare Access — pinned
+    # (not :latest) so an unattended `docker pull` on restart can't silently
+    # swap binary versions. Bump deliberately; track releases at
+    # https://github.com/cloudflare/cloudflared/releases
+    image: cloudflare/cloudflared:2026.5.1
+    container_name: cloudflared
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared-config.yml:/etc/cloudflared/config.yml:ro
+      - ./tunnel.json:/etc/cloudflared/tunnel.json:ro
+    restart: unless-stopped
+    depends_on:
+      - wg-easy
+    networks:
+      - wg
+
+networks:
+  wg:
+    driver: bridge
+    enable_ipv6: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.42.42.0/24
+        - subnet: fdcc:ad94:bacf:61a3::/64

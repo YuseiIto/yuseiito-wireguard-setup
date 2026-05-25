@@ -1,0 +1,99 @@
+#!/bin/bash
+set -euo pipefail
+
+# Token is sourced from /etc/cf-ddns.env (mode 0600) to keep it out of
+# this world-executable script body.
+# shellcheck source=/dev/null
+. /etc/cf-ddns.env
+
+ZONE_ID="{{ cf_zone_id }}"
+RECORD_ID_V4="{{ cf_record_id }}"
+RECORD_ID_V6="{{ cf_record_id_v6 }}"
+RECORD_NAME="{{ wg_public_hostname }}"
+# Optional healthchecks.io (or compatible) base URL. Empty disables pings.
+# See CLAUDE.md "Required variables (vault)" — Optional.
+HEALTHCHECK_URL="{{ cf_ddns_healthcheck_url | default('') }}"
+
+# Per-family fail-soft: if v4 update fails, still attempt v6 and vice versa.
+# Final exit nonzero if either family errored.
+#
+# v4 fetch failure is treated as best-effort and does NOT set errored, because
+# the operator's home ISP is MAP-E (see CLAUDE.md "MAP-E caveat"): inbound v4
+# may legitimately be unreachable and ipify -4 will fail every time. Logging
+# every run as failed would train the operator to ignore the timer, masking
+# real v6 failures. A v4 fetch that *succeeds* but returns garbage or whose
+# Cloudflare PUT is rejected is still a real error.
+errored=0
+
+validate_v4() {
+  local ip=$1
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  local IFS=.
+  local -a octets
+  read -ra octets <<<"$ip"
+  for o in "${octets[@]}"; do
+    if (( o > 255 )); then return 1; fi
+  done
+  return 0
+}
+
+validate_v6() {
+  # Loose check — wrong AAAA only affects the v6 path; v4 fallback via Happy
+  # Eyeballs keeps the VPN reachable. Refuse obvious garbage (must contain
+  # ':' and only hex/':') but do not try to parse compressed v6 fully.
+  local ip=$1
+  [[ "$ip" == *:* && "$ip" =~ ^[0-9a-fA-F:]+$ ]]
+}
+
+update_record() {
+  local record_id=$1 record_type=$2 ip=$3
+  local resp
+  if ! resp=$(curl -fsS --max-time 10 -X PUT \
+      "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${record_id}" \
+      -H "Authorization: Bearer ${CF_DDNS_TOKEN}" \
+      -H "Content-Type: application/json" \
+      --data "{\"type\":\"${record_type}\",\"name\":\"${RECORD_NAME}\",\"content\":\"${ip}\",\"ttl\":120,\"proxied\":false}"); then
+    echo "cf-ddns: ${record_type} PUT failed (transport)" >&2
+    return 1
+  fi
+  if ! jq -e '.success == true' >/dev/null <<<"$resp"; then
+    echo "cf-ddns: ${record_type} update rejected: $resp" >&2
+    return 1
+  fi
+}
+
+# IPv4 path (best-effort on MAP-E)
+ipv4=""
+if ! ipv4=$(curl -fsS -4 --max-time 10 https://api.ipify.org); then
+  echo "cf-ddns: failed to fetch IPv4 from ipify (best-effort, not erroring)" >&2
+elif ! validate_v4 "$ipv4"; then
+  echo "cf-ddns: invalid IPv4 from ipify: '$ipv4'" >&2
+  errored=1
+elif ! update_record "$RECORD_ID_V4" A "$ipv4"; then
+  errored=1
+fi
+
+# IPv6 path
+ipv6=""
+if ! ipv6=$(curl -fsS -6 --max-time 10 https://api6.ipify.org); then
+  echo "cf-ddns: failed to fetch IPv6 from ipify" >&2
+  errored=1
+elif ! validate_v6 "$ipv6"; then
+  echo "cf-ddns: invalid IPv6 from ipify: '$ipv6'" >&2
+  errored=1
+elif ! update_record "$RECORD_ID_V6" AAAA "$ipv6"; then
+  errored=1
+fi
+
+# Optional healthchecks.io ping. The path suffix ("/0" or "/1") tells the
+# service the run's exit status so alerts fire on both crashes and silent
+# rejection-loops (Cloudflare 200 with success=false). `|| true` so a transient
+# ping failure does not itself flip the timer to failed. Runtime-gated rather
+# than Jinja-gated so the rendered file is the same shape every time and the
+# raw template stays valid bash for shellcheck.
+if [[ -n "$HEALTHCHECK_URL" ]]; then
+  curl -fsS --retry 3 --max-time 10 -o /dev/null \
+    "${HEALTHCHECK_URL}/${errored}" || true
+fi
+
+exit "$errored"

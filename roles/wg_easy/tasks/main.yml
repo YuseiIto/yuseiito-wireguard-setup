@@ -1,0 +1,46 @@
+- name: Create wg-easy directory
+  ansible.builtin.file:
+    path: /opt/wg-easy
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/wg-easy/docker-compose.yml
+    owner: root
+    group: root
+    mode: '0640'
+  no_log: true
+
+- name: Deploy cloudflared config
+  ansible.builtin.template:
+    src: cloudflared-config.yml.j2
+    dest: /opt/wg-easy/cloudflared-config.yml
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Deploy tunnel credentials
+  ansible.builtin.copy:
+    src: "{{ tunnel_cred_file }}"
+    dest: /opt/wg-easy/tunnel.json
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Start stack
+  # wait: true は compose の healthcheck を待たず "running" だけを
+  # 確認するため、env 不正や image 起動失敗で crash-loop に入った
+  # コンテナがあれば wait_timeout 経過時点で failed として返る。
+  # サービス名 / 個数のハードコードを避けるため、独自検証タスクは
+  # 入れない。
+  community.docker.docker_compose_v2:
+    project_src: /opt/wg-easy
+    state: present
+    wait: true
+    wait_timeout: 60
+  no_log: true
