@@ -1,0 +1,89 @@
+- name: Set timezone
+  community.general.timezone:
+    name: Asia/Tokyo
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - unattended-upgrades
+      - apt-listchanges
+      - ufw
+      - jq
+    update_cache: true
+
+- name: Enable unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20-auto-upgrades
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+
+- name: Configure unattended-upgrades to auto-reboot
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/50-unattended-upgrades-local
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+
+- name: Enable persistent IP forwarding (v4 + v6)
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: '1'
+    sysctl_file: /etc/sysctl.d/10-wg-forward.conf
+    state: present
+    reload: true
+  loop:
+    - net.ipv4.ip_forward
+    - net.ipv6.conf.all.forwarding
+
+- name: Enable IPv6 in UFW
+  # dual-stack VPN. UFW reads /etc/default/ufw at enable time, so this must
+  # come before "UFW enable" on a fresh host AND before any rule changes on
+  # a host where UFW is already enabled with IPV6=no — otherwise the v6
+  # rules added below this point are accepted into the rule files but stay
+  # inert until the deferred handler runs at play end.
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^IPV6='
+    line: 'IPV6=yes'
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload UFW
+
+- name: Flush handlers so IPV6=yes takes effect before subsequent UFW tasks
+  ansible.builtin.meta: flush_handlers
+
+- name: UFW default deny incoming
+  community.general.ufw:
+    direction: incoming
+    policy: deny
+
+- name: UFW default allow outgoing
+  community.general.ufw:
+    direction: outgoing
+    policy: allow
+
+- name: UFW allow SSH and WireGuard
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - port: 22
+      proto: tcp
+    - port: 51820
+      proto: udp
+
+- name: UFW enable
+  community.general.ufw:
+    state: enabled

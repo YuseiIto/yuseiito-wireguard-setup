@@ -1,0 +1,7 @@
+tunnel: {{ tunnel_id }}
+credentials-file: /etc/cloudflared/tunnel.json
+
+ingress:
+  - hostname: {{ wg_admin_hostname }}
+    service: http://wg-easy:51821
+  - service: http_status:404

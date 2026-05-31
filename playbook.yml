@@ -1,0 +1,8 @@
+- name: Configure grumpy
+  hosts: grumpy
+  become: true
+  roles:
+    - base
+    - docker
+    - wg_easy
+    - ddns

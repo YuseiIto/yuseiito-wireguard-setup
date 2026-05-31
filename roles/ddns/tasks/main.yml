@@ -1,0 +1,70 @@
+- name: Deploy ddns env file
+  ansible.builtin.copy:
+    dest: /etc/cf-ddns.env
+    content: |
+      CF_DDNS_TOKEN={{ cf_ddns_token }}
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Deploy ddns script
+  ansible.builtin.template:
+    src: ddns.sh.j2
+    dest: /usr/local/bin/cf-ddns.sh
+    owner: root
+    group: root
+    mode: '0755'
+  no_log: true
+
+- name: Deploy systemd service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cf-ddns.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Cloudflare DDNS update
+      Wants=network-online.target
+      After=network-online.target
+      ConditionPathExists=/etc/cf-ddns.env
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/cf-ddns.sh
+      SyslogIdentifier=cf-ddns
+  notify:
+    - Reload systemd
+    - Restart cf-ddns timer
+
+- name: Deploy systemd timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cf-ddns.timer
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Run cf-ddns every 5 minutes
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec=5min
+      Persistent=true
+      [Install]
+      WantedBy=timers.target
+  notify:
+    - Reload systemd
+    - Restart cf-ddns timer
+
+- name: Flush handlers before enabling the timer
+  # Enable timer は cf-ddns.timer ユニットが systemd の view に
+  # 入っている必要がある。Deploy systemd timer から飛ばした
+  # Reload systemd ハンドラは play 末尾まで遅延するので、ここで
+  # 明示的に flush しておかないと初回適用で "Unit not found" になる。
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable timer
+  ansible.builtin.systemd_service:
+    name: cf-ddns.timer
+    enabled: true
+    state: started
