@@ -1,3 +1,23 @@
+- name: Probe wireguard module presence on host
+  # CT 内から modprobe はできないので、host 共有の /proc/modules を覗いて前提確認だけする。
+  ansible.builtin.command: grep -q '^wireguard ' /proc/modules
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  register: wg_module_check
+
+- name: Fail if wireguard module not loaded (skipped in --check)
+  # --check では skip し、通常実行のみ loud に止める。probe 自体は read-only なので check でも回す。
+  ansible.builtin.fail:
+    msg: |
+      Host kernel does not have the wireguard module loaded.
+      On the Proxmox host:
+        echo wireguard > /etc/modules-load.d/wireguard.conf
+        modprobe wireguard
+  when:
+    - not ansible_check_mode
+    - wg_module_check.rc != 0
+
 - name: Create wg-easy directory
   ansible.builtin.file:
     path: /opt/wg-easy
@@ -15,32 +35,11 @@
     mode: '0640'
   no_log: true
 
-- name: Deploy cloudflared config
-  ansible.builtin.template:
-    src: cloudflared-config.yml.j2
-    dest: /opt/wg-easy/cloudflared-config.yml
-    owner: root
-    group: root
-    mode: '0640'
-
-- name: Deploy tunnel credentials
-  ansible.builtin.copy:
-    src: "{{ tunnel_cred_file }}"
-    dest: /opt/wg-easy/tunnel.json
-    owner: root
-    group: root
-    mode: '0600'
-  no_log: true
-
 - name: Start stack
-  # wait: true は compose の healthcheck を待たず "running" だけを
-  # 確認するため、env 不正や image 起動失敗で crash-loop に入った
-  # コンテナがあれば wait_timeout 経過時点で failed として返る。
-  # サービス名 / 個数のハードコードを避けるため、独自検証タスクは
-  # 入れない。
   community.docker.docker_compose_v2:
     project_src: /opt/wg-easy
     state: present
     wait: true
-    wait_timeout: 60
+    # 初回は image pull + INIT_* seed + WG IF 起動の合計で 60s を超えうるので余裕を持たせる。
+    wait_timeout: 180
   no_log: true

@@ -1,0 +1,18 @@
+---
+# 平文で commit してよい設定値 (秘密は vault.yml 側)。詳細は CLAUDE.md "必須変数"。
+
+wg_public_hostname: tsukuba-nest.vpn.yuseiito.com
+# MAP-E 割当ポート範囲内であること (任意ポートは v4 着信不可)。v4/v6 同一。
+wg_port: 1953
+wg_password: "{{ vault_wg_password }}"
+
+cf_tunnel_token: "{{ vault_cf_tunnel_token }}"
+
+cf_zone_id: "eac3889c0617f31678e549129b1305d6"        # yuseiito.com
+cf_record_id: "81937b53a3fe6a5908cb5a936fb8886e"      # A
+cf_record_id_v6: "087269386954aa8581fedf35b30f8843"   # AAAA
+cf_ddns_token: "{{ vault_cf_ddns_token }}"
+
+# 任意: この行と vault.yml 側 vault_cf_ddns_healthcheck_url の両方を有効化する。
+# 片方だけだと bare 名が未定義のまま default('') で空に解決され ping しない。
+# cf_ddns_healthcheck_url: "{{ vault_cf_ddns_healthcheck_url }}"

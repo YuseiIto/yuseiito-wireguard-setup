@@ -30,9 +30,7 @@ jobs:
         run: uv run ansible-playbook -i inventory.yml playbook.yml --syntax-check
 
       - name: Shellcheck shell scripts
-        # The .j2 template is the heaviest shell logic in the repo. Its Jinja
-        # expressions sit in double-quoted RHS positions so shellcheck parses
-        # the file as valid bash without rendering.
+        # .j2 だが Jinja 式が double-quoted RHS にしか居ないので、レンダなしで通る。
         run: |
           shellcheck scripts/*.sh
           shellcheck -s bash roles/ddns/templates/ddns.sh.j2

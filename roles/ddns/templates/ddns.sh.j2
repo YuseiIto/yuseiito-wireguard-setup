@@ -1,8 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Token is sourced from /etc/cf-ddns.env (mode 0600) to keep it out of
-# this world-executable script body.
+# Token は world-executable な本文に残さないため /etc/cf-ddns.env (0600) から読む。
 # shellcheck source=/dev/null
 . /etc/cf-ddns.env
 
@@ -10,19 +9,10 @@ ZONE_ID="{{ cf_zone_id }}"
 RECORD_ID_V4="{{ cf_record_id }}"
 RECORD_ID_V6="{{ cf_record_id_v6 }}"
 RECORD_NAME="{{ wg_public_hostname }}"
-# Optional healthchecks.io (or compatible) base URL. Empty disables pings.
-# See CLAUDE.md "Required variables (vault)" — Optional.
 HEALTHCHECK_URL="{{ cf_ddns_healthcheck_url | default('') }}"
 
-# Per-family fail-soft: if v4 update fails, still attempt v6 and vice versa.
-# Final exit nonzero if either family errored.
-#
-# v4 fetch failure is treated as best-effort and does NOT set errored, because
-# the operator's home ISP is MAP-E (see CLAUDE.md "MAP-E caveat"): inbound v4
-# may legitimately be unreachable and ipify -4 will fail every time. Logging
-# every run as failed would train the operator to ignore the timer, masking
-# real v6 failures. A v4 fetch that *succeeds* but returns garbage or whose
-# Cloudflare PUT is rejected is still a real error.
+# v4/v6 は片方失敗でもう片方を続行する。ただし v4 fetch (ipify -4) の単発失敗だけは
+# errored を立てない — 一時障害で timer を赤に染めると本物の v6 故障を見落とすため。
 errored=0
 
 validate_v4() {
@@ -38,9 +28,7 @@ validate_v4() {
 }
 
 validate_v6() {
-  # Loose check — wrong AAAA only affects the v6 path; v4 fallback via Happy
-  # Eyeballs keeps the VPN reachable. Refuse obvious garbage (must contain
-  # ':' and only hex/':') but do not try to parse compressed v6 fully.
+  # loose check — 厳密 v6 パースはやらない (v6 失敗は Happy Eyeballs で v4 fallback)。
   local ip=$1
   [[ "$ip" == *:* && "$ip" =~ ^[0-9a-fA-F:]+$ ]]
 }
@@ -48,14 +36,18 @@ validate_v6() {
 update_record() {
   local record_id=$1 record_type=$2 ip=$3
   local resp
-  if ! resp=$(curl -fsS --max-time 10 -X PUT \
+  # -f は付けない: 4xx/5xx のボディに含まれる Cloudflare errors[] (token 失効 /
+  # zone・record id ずれの切り分けに必要) を捨てたくないため。
+  if ! resp=$(curl -sS --max-time 10 -X PUT \
       "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${record_id}" \
       -H "Authorization: Bearer ${CF_DDNS_TOKEN}" \
       -H "Content-Type: application/json" \
       --data "{\"type\":\"${record_type}\",\"name\":\"${RECORD_NAME}\",\"content\":\"${ip}\",\"ttl\":120,\"proxied\":false}"); then
-    echo "cf-ddns: ${record_type} PUT failed (transport)" >&2
+    echo "cf-ddns: ${record_type} PUT failed: ${resp:-<no body>}" >&2
     return 1
   fi
+  # jq の stderr は捨てない: 非 JSON ボディ (HTML interstitial / captive portal) の parse error
+  # 自体が診断シグナル。$resp に token は乗らないので journal 漏洩リスクは無い。
   if ! jq -e '.success == true' >/dev/null <<<"$resp"; then
     echo "cf-ddns: ${record_type} update rejected: $resp" >&2
     return 1
@@ -85,12 +77,8 @@ elif ! update_record "$RECORD_ID_V6" AAAA "$ipv6"; then
   errored=1
 fi
 
-# Optional healthchecks.io ping. The path suffix ("/0" or "/1") tells the
-# service the run's exit status so alerts fire on both crashes and silent
-# rejection-loops (Cloudflare 200 with success=false). `|| true` so a transient
-# ping failure does not itself flip the timer to failed. Runtime-gated rather
-# than Jinja-gated so the rendered file is the same shape every time and the
-# raw template stays valid bash for shellcheck.
+# `|| true` で ping 自身の失敗が timer を赤くするのを防ぐ。Jinja でなく runtime ガード
+# にしてあるのは、レンダ後の bash が常に同じ形になり shellcheck を素通しできるよう。
 if [[ -n "$HEALTHCHECK_URL" ]]; then
   curl -fsS --retry 3 --max-time 10 -o /dev/null \
     "${HEALTHCHECK_URL}/${errored}" || true

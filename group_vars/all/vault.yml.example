@@ -1,0 +1,10 @@
+---
+# vault.yml.example: コピーして実値を埋め `ansible-vault encrypt` する。
+# 編集は `ansible-vault edit`。暗号化のまま commit してよい。
+
+vault_wg_password: "REPLACE_ME_WITH_ADMIN_PASSWORD"
+vault_cf_ddns_token: "REPLACE_ME_WITH_CLOUDFLARE_API_TOKEN"
+vault_cf_tunnel_token: "REPLACE_ME_WITH_TUNNEL_TOKEN_eyJ..."
+
+# 任意: vars.yml 側の cf_ddns_healthcheck_url とペアで有効化する必要あり。
+# vault_cf_ddns_healthcheck_url: "https://hc-ping.com/your-uuid"

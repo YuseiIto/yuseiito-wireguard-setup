@@ -1,0 +1,13 @@
+# Ansible Vault パスフレーズファイル (絶対 commit しない)
+.vault_pass
+
+# Cloudflare Tunnel の credentials (controller 側ローカル運用)
+files/tunnel.json
+
+# Ansible
+*.retry
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc

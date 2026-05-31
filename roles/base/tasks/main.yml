@@ -15,7 +15,7 @@
 
 - name: Enable unattended-upgrades
   ansible.builtin.copy:
-    dest: /etc/apt/apt.conf.d/20-auto-upgrades
+    dest: /etc/apt/apt.conf.d/99-auto-upgrades
     owner: root
     group: root
     mode: '0644'
@@ -34,23 +34,25 @@
       Unattended-Upgrade::Automatic-Reboot "true";
       Unattended-Upgrade::Automatic-Reboot-Time "04:00";
 
-- name: Enable persistent IP forwarding (v4 + v6)
+- name: Enable persistent IPv6 RA acceptance + IP forwarding (v4 + v6)
   ansible.posix.sysctl:
-    name: "{{ item }}"
-    value: '1'
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
     sysctl_file: /etc/sysctl.d/10-wg-forward.conf
     state: present
     reload: true
   loop:
-    - net.ipv4.ip_forward
-    - net.ipv6.conf.all.forwarding
+    # accept_ra=2 は forwarding=1 より前に置く: forwarding を入れた途端、既定の
+    # accept_ra=1 では RA が無視されて v6 デフォルトルートが消える。
+    # NIC 名は v4 fact から取る — v6 が壊れた状況 (=2 が要る状況) で v6 fact が消える。
+    - { name: net.ipv6.conf.default.accept_ra, value: '2' }
+    - { name: "net.ipv6.conf.{{ ansible_default_ipv4.interface | default('eth0') }}.accept_ra", value: '2' }
+    - { name: net.ipv4.ip_forward, value: '1' }
+    - { name: net.ipv6.conf.all.forwarding, value: '1' }
 
 - name: Enable IPv6 in UFW
-  # dual-stack VPN. UFW reads /etc/default/ufw at enable time, so this must
-  # come before "UFW enable" on a fresh host AND before any rule changes on
-  # a host where UFW is already enabled with IPV6=no — otherwise the v6
-  # rules added below this point are accepted into the rule files but stay
-  # inert until the deferred handler runs at play end.
+  # UFW は /etc/default/ufw を enable/reload 時にしか読まない。後続 allow ルールが
+  # v6 にも適用されるよう、IPV6=yes を先に書いて即 reload する (下の flush_handlers)。
   ansible.builtin.lineinfile:
     path: /etc/default/ufw
     regexp: '^IPV6='
@@ -58,6 +60,7 @@
     owner: root
     group: root
     mode: '0644'
+    create: true  # --check 時は ufw 未インストールでこのファイルが無いため
   notify: Reload UFW
 
 - name: Flush handlers so IPV6=yes takes effect before subsequent UFW tasks
@@ -81,7 +84,7 @@
   loop:
     - port: 22
       proto: tcp
-    - port: 51820
+    - port: "{{ wg_port }}"
       proto: udp
 
 - name: UFW enable

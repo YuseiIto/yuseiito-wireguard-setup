@@ -49,7 +49,6 @@
       [Timer]
       OnBootSec=2min
       OnUnitActiveSec=5min
-      Persistent=true
       [Install]
       WantedBy=timers.target
   notify:
@@ -57,10 +56,7 @@
     - Restart cf-ddns timer
 
 - name: Flush handlers before enabling the timer
-  # Enable timer は cf-ddns.timer ユニットが systemd の view に
-  # 入っている必要がある。Deploy systemd timer から飛ばした
-  # Reload systemd ハンドラは play 末尾まで遅延するので、ここで
-  # 明示的に flush しておかないと初回適用で "Unit not found" になる。
+  # daemon-reload を遅延させると初回適用で次タスクが "Unit not found" で落ちる。
   ansible.builtin.meta: flush_handlers
 
 - name: Enable timer

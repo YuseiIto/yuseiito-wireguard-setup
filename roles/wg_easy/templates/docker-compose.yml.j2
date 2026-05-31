@@ -4,41 +4,44 @@ services:
     container_name: wg-easy
     environment:
       - LANG=en
-      - WG_HOST={{ wg_public_hostname }}     # 例: vpn.example.com
-      - PASSWORD_HASH={{ wg_password_hash }} # bcrypt
+      # INIT_* は wg-easy-data が空の初回起動でのみ効く (以後の変更は UI 経由)。
+      - INIT_ENABLED=true
+      - INIT_USERNAME=admin
+      # '$' は compose 変数展開で食われるので $$ にエスケープ。
+      - INIT_PASSWORD={{ wg_password | replace('$', '$$') }}
+      - INIT_HOST={{ wg_public_hostname }}
+      - INIT_PORT={{ wg_port }}
+      - INIT_DNS=1.1.1.1, 2606:4700:4700::1111
+      # クライアント ULA は Docker bridge の /64 (fdcc:ad94:bacf:61a3::/64) と重ねないこと。
+      - INIT_IPV4_CIDR=10.8.0.0/24
+      - INIT_IPV6_CIDR=fdcc:ad94:bacf:61a4::/64
+      - INIT_ALLOWED_IPS=0.0.0.0/0, ::/0
       - PORT=51821
-      - WG_PORT=51820
-      # wg-easy 慣習: 末尾の "x" はクライアントごとの第4オクテットの placeholder
-      # (テンプレ変数ではない)。
-      - WG_DEFAULT_ADDRESS=10.8.0.x
-      - WG_DEFAULT_DNS=1.1.1.1, 2606:4700:4700::1111
-      # dual-stack VPN (see CLAUDE.md "Network family policy"). wg-easy v15 では
-      # env はあくまで初回 boot の seed で、永続値は内部 DB 側に持つ — UI から
-      # サーバ設定を変えると上書きされ、その後は env を編集しても反映されない。
-      # それでも初回構築で正しい既定値を入れておくこと、および "意図の宣言" として
-      # 意味があるので残す。実際の enforcement は CLAUDE.md "Post-deploy manual
-      # UI setup" の手順で UI 側に保存する。
-      - WG_ALLOWED_IPS=0.0.0.0/0, ::/0
+      # TLS 終端は cloudflared 側、コンテナは平文 HTTP を許す。
+      - INSECURE=true
     volumes:
       - ./wg-easy-data:/etc/wireguard
-      # NOTE: 通常wg-easyでは/lib/modulesをbindするが、unprivileged LXC ではコンテナ内から modprobe できないため、/lib/modules をバインドしても無意味。
-      # 代わりに、Proxmox ホスト側でwireguard モジュールが load 済みであることに依存している。
-      # - /lib/modules:/lib/modules:ro
+      # upstream の /lib/modules bind と SYS_MODULE は unprivileged LXC で no-op
+      # (CT 内 modprobe 不可)。host 側で wireguard module ロード済み前提に倒す。
     ports:
-      - "51820:51820/udp"
-      # 51821 は Tunnel 経由なので外に出さない
+      # 管理 UI(51821) は Tunnel 経由のみ。host へは publish しない。
+      - "{{ wg_port }}:{{ wg_port }}/udp"
     cap_add:
       - NET_ADMIN
-      # NOTE: 通常wg-easyではSYS_MODULEをcap_addしておくが、
-      # SYS_MODULE は unprivileged LXC では実質効かない（/lib/modulesと同様の理由による）
-      # ホスト側で modprobe wireguard 済みである前提のため不要。
-      # - SYS_MODULE
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
       - net.ipv6.conf.all.disable_ipv6=0
       - net.ipv6.conf.all.forwarding=1
       - net.ipv6.conf.default.forwarding=1
+    healthcheck:
+      # process running ≠ WG IF up。IF 名のハードコード回避で interfaces を見る。
+      test: ["CMD-SHELL", "test -n \"$(wg show interfaces)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # cold start (image pull + INIT_* DB seed + WG IF up) で 30s では足りないことがある。
+      start_period: 90s
     restart: unless-stopped
     networks:
       wg:
@@ -46,16 +49,14 @@ services:
         ipv6_address: fdcc:ad94:bacf:61a3::2a
 
   cloudflared:
-    # Edge proxy fronting the admin UI behind Cloudflare Access — pinned
-    # (not :latest) so an unattended `docker pull` on restart can't silently
-    # swap binary versions. Bump deliberately; track releases at
-    # https://github.com/cloudflare/cloudflared/releases
+    # :latest は使わない (unattended pull の binary 置換を避ける)。
+    # 更新は https://github.com/cloudflare/cloudflared/releases を見て手動で。
     image: cloudflare/cloudflared:2026.5.1
     container_name: cloudflared
-    command: tunnel --config /etc/cloudflared/config.yml run
-    volumes:
-      - ./cloudflared-config.yml:/etc/cloudflared/config.yml:ro
-      - ./tunnel.json:/etc/cloudflared/tunnel.json:ro
+    # remotely-managed: ingress はダッシュボード側、ローカル config.yml / credentials JSON 無し。
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN={{ cf_tunnel_token }}
     restart: unless-stopped
     depends_on:
       - wg-easy
