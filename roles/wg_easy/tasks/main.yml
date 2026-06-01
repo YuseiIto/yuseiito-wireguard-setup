@@ -4,7 +4,7 @@
   changed_when: false
   check_mode: false
   failed_when: false
-  register: wg_module_check
+  register: wg_easy_module_check
 
 - name: Fail if wireguard module not loaded (skipped in --check)
   # --check では skip し、通常実行のみ loud に止める。probe 自体は read-only なので check でも回す。
@@ -16,7 +16,7 @@
         modprobe wireguard
   when:
     - not ansible_check_mode
-    - wg_module_check.rc != 0
+    - wg_easy_module_check.rc != 0
 
 - name: Create wg-easy directory
   ansible.builtin.file:

@@ -22,6 +22,14 @@ jobs:
       - name: Install Ansible Galaxy collections
         run: uv run ansible-galaxy collection install -r requirements.yml
 
+      - name: Provide a throwaway vault password for linting
+        # .vault_pass は gitignore 済みで CI には来ない。ansible.cfg が
+        # vault_password_file で参照するため、ファイルが存在しないと ansible-lint /
+        # --syntax-check が "vault password file not found" で即死する。
+        # lint は復号失敗を warning として無視し、--syntax-check は vault の値を
+        # 復号しないので、ダミー値で十分。秘密は CI に持ち込まない。
+        run: echo "ci-lint-only" > .vault_pass
+
       - run: uv run yamllint .
 
       - run: uv run ansible-lint
